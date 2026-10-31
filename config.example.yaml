@@ -1,0 +1,38 @@
+# MyThermostat configuration
+# Copy to config.yaml and fill in your login. config.yaml holds your American
+# Standard Home password and the database password, so it is git-ignored;
+# keep it chmod 600.
+
+server:
+  port: 8086
+  # Keep this on 127.0.0.1: the service trusts the hub's X-Hub-Role header,
+  # so it must only be reachable through MyHomeServicesHub.
+  bind: 127.0.0.1
+  # true = requests that bypass the hub are treated as admin (local testing only)
+  allow_direct: false
+
+# The American Standard Home app login. If the app lets you invite another
+# user to your home, give this service its own account: then it can be
+# removed without changing your password. The cloud locks an account after a
+# few bad passwords, so after a failed sign-in this waits 15 minutes (doubling,
+# up to 6 hours) before trying again.
+account:
+  brand: asair            # asair = American Standard; trane and nexia also work
+  username: "you@example.com"
+  password: "change-me"
+
+# How often to read the thermostat from the cloud, in seconds. The app's own
+# library uses 120; changes you make here are read back after 5 seconds.
+poll_seconds: 120
+
+# MariaDB: readings for the charts and run time, the change log, and
+# schedules. Without it the thermostat can still be controlled, but nothing
+# is remembered and schedules are off.
+database:
+  enabled: true
+  host: 127.0.0.1
+  port: 3306
+  name: hvac_db
+  user: hvac_app
+  password: "change-me"
+  retention_days: 730     # readings older than this are deleted

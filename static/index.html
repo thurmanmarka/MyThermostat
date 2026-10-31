@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thermostat — My Home Services Hub</title>
+    <style>
+        :root {
+            --page-bg: #f5f7fb;
+            --panel-bg: #ffffff;
+            --panel-border: #d2d7e0;
+            --accent: #2563eb;
+            --accent-soft: #e0edff;
+            --text-main: #1f2933;
+            --text-muted: #6b7280;
+            --ok: #15803d;
+            --bad: #b91c1c;
+            --warn: #b45309;
+            --heat: #dc2626;
+            --cool: #2563eb;
+            --gradient-start: #d9e6ff;
+            --gradient-mid1: #e7edf4;
+            --gradient-mid2: #dde7f4;
+            --gradient-end: #d3e0f0;
+        }
+
+        [data-theme="dark"] {
+            --page-bg: #1e293b;
+            --panel-bg: #334155;
+            --panel-border: #475569;
+            --accent: #3b82f6;
+            --accent-soft: #1e3a8a;
+            --text-main: #f1f5f9;
+            --text-muted: #94a3b8;
+            --ok: #4ade80;
+            --bad: #f87171;
+            --warn: #fbbf24;
+            --heat: #f87171;
+            --cool: #60a5fa;
+            --gradient-start: #1e293b;
+            --gradient-mid1: #0f172a;
+            --gradient-mid2: #1e293b;
+            --gradient-end: #334155;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: radial-gradient(circle at top left, var(--gradient-start), var(--gradient-mid1) 40%, var(--gradient-mid2) 70%, var(--gradient-end) 100%);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            padding: 32px 16px;
+        }
+
+        .page-shell {
+            max-width: 1000px;
+            width: 100%;
+            background: var(--page-bg);
+            border-radius: 12px;
+            box-shadow: 0 18px 45px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(15, 23, 42, 0.03);
+            padding: 28px;
+        }
+
+        .top-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+        .top-bar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        h1 { font-size: 1.6rem; }
+
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .panel-title { font-weight: 600; font-size: 1.05rem; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .muted { color: var(--text-muted); font-size: 0.9rem; font-weight: 400; }
+
+        .btn, .back-btn, .theme-toggle, select, input {
+            font: inherit;
+            border-radius: 8px;
+            border: 1px solid var(--panel-border);
+            background: var(--panel-bg);
+            color: var(--text-main);
+            padding: 8px 12px;
+        }
+        .btn { cursor: pointer; background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 500; }
+        .btn.secondary { background: var(--accent-soft); color: var(--text-main); border-color: var(--panel-border); }
+        .btn.danger { background: none; color: var(--bad); border-color: var(--panel-border); }
+        .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+        .btn.small { padding: 4px 10px; font-size: 0.8rem; }
+        .back-btn { text-decoration: none; }
+        .theme-toggle { cursor: pointer; }
+
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+        .stat { background: var(--accent-soft); border-radius: 8px; padding: 12px; }
+        .stat .k { font-size: 0.8rem; color: var(--text-muted); }
+        .stat .v { font-size: 1.15rem; font-weight: 600; margin-top: 4px; }
+        .v.heating { color: var(--heat); }
+        .v.cooling { color: var(--cool); }
+        .v.bad { color: var(--bad); }
+
+        .zone { display: grid; grid-template-columns: auto 1fr; gap: 24px; align-items: center; margin-top: 18px; }
+        .zone + .zone { border-top: 1px solid var(--panel-border); padding-top: 18px; }
+        .dial { width: 150px; height: 150px; border-radius: 50%; border: 6px solid var(--panel-border); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .dial.heating { border-color: var(--heat); }
+        .dial.cooling { border-color: var(--cool); }
+        .dial .temp { font-size: 2.6rem; font-weight: 600; line-height: 1; }
+        .dial .zname { font-size: 0.8rem; color: var(--text-muted); margin-top: 6px; text-align: center; padding: 0 10px; }
+        .zone-ctl { display: flex; flex-direction: column; gap: 14px; }
+        .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+        .sp { display: flex; align-items: center; gap: 6px; }
+        .sp .val { font-size: 1.4rem; font-weight: 600; min-width: 3.2em; text-align: center; font-variant-numeric: tabular-nums; }
+        .sp.heat .val { color: var(--heat); }
+        .sp.cool .val { color: var(--cool); }
+        .sp button { width: 36px; height: 36px; padding: 0; font-size: 1.1rem; }
+        .sp-label { font-size: 0.8rem; color: var(--text-muted); }
+        label { display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem; color: var(--text-muted); }
+        label select, label input { color: var(--text-main); }
+        @media (max-width: 640px) { .zone { grid-template-columns: 1fr; justify-items: center; } }
+
+        .settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+
+        .msg { margin-top: 12px; font-weight: 500; min-height: 1.2em; }
+        .msg.ok { color: var(--ok); }
+        .msg.bad { color: var(--bad); }
+        .hidden { display: none !important; }
+        .banner { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--bad); color: var(--bad); font-weight: 500; margin-bottom: 20px; }
+
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+        th { text-align: left; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); padding: 6px 8px; border-bottom: 1px solid var(--panel-border); white-space: nowrap; }
+        td { padding: 8px; border-bottom: 1px solid var(--panel-border); vertical-align: middle; }
+        tr:last-child td { border-bottom: none; }
+        .sub { font-size: 0.78rem; color: var(--text-muted); }
+        .result-ok { color: var(--ok); font-weight: 600; }
+        .result-bad { color: var(--bad); font-weight: 600; }
+        .empty { color: var(--text-muted); padding: 8px 0; }
+
+        .sched-form { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--panel-border); }
+        .days { display: flex; gap: 6px; flex-wrap: wrap; grid-column: 1 / -1; }
+        .days label { flex-direction: row; align-items: center; gap: 4px; background: var(--accent-soft); border-radius: 6px; padding: 4px 8px; cursor: pointer; color: var(--text-main); }
+        .sched-form .actions { grid-column: 1 / -1; display: flex; gap: 10px; }
+        @media (max-width: 700px) { .sched-form { grid-template-columns: 1fr 1fr; } }
+
+        .chart-title { font-size: 0.85rem; color: var(--text-muted); margin: 18px 0 8px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+        .legend { display: inline-flex; align-items: center; gap: 4px; }
+        .legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
+        .line-chart { width: 100%; height: 200px; display: block; }
+        .line-chart text { fill: var(--text-muted); font-size: 11px; }
+        .line-chart .grid { stroke: var(--panel-border); stroke-dasharray: 3 3; }
+        .bars { display: flex; align-items: flex-end; gap: 3px; height: 140px; border-bottom: 1px solid var(--panel-border); }
+        .bars .col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; }
+        .bars .seg { width: min(70%, 28px); margin: 0 auto; }
+        .bars .seg.heat { background: var(--heat); }
+        .bars .seg.cool { background: var(--cool); border-radius: 4px 4px 0 0; }
+        .bars-x { display: flex; gap: 3px; font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; }
+        .bars-x span { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; }
+
+        .tabs { display: flex; gap: 6px; }
+        .tabs button { font: inherit; font-size: 0.85rem; border: 1px solid var(--panel-border); background: none; color: var(--text-muted); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+        .tabs button.active { background: var(--accent-soft); color: var(--text-main); }
+    </style>
+</head>
+<body>
+    <div class="page-shell">
+        <div class="top-bar">
+            <h1>🌡️ Thermostat</h1>
+            <div class="top-bar-right">
+                <select id="thSelect" aria-label="Thermostat"></select>
+                <a href="/" class="back-btn">🏠 Home</a>
+                <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">🌙</button>
+            </div>
+        </div>
+
+        <div id="errBanner" class="banner hidden"></div>
+
+        <div class="panel">
+            <div class="panel-title">
+                <span>Status <span class="muted" id="seenNote"></span></span>
+            </div>
+            <div class="stats">
+                <div class="stat"><div class="k">System</div><div class="v" id="stState">—</div></div>
+                <div class="stat"><div class="k">Indoor humidity</div><div class="v" id="stHum">—</div></div>
+                <div class="stat"><div class="k">Outdoor</div><div class="v" id="stOut">—</div></div>
+                <div class="stat"><div class="k">Heating today</div><div class="v" id="stHeatToday">—</div></div>
+                <div class="stat"><div class="k">Cooling today</div><div class="v" id="stCoolToday">—</div></div>
+            </div>
+            <div id="zones"></div>
+            <div id="ctlMsg" class="msg"></div>
+        </div>
+
+        <div class="panel" id="settingsPanel">
+            <div class="panel-title"><span>Settings <span class="muted">everything else the thermostat offers</span></span></div>
+            <div class="settings" id="settings"></div>
+        </div>
+
+        <div class="panel" id="historyPanel">
+            <div class="panel-title">
+                <span>History <span class="muted" id="histZone"></span></span>
+                <span class="tabs" id="rangeTabs">
+                    <button data-hours="24" class="active">24 h</button>
+                    <button data-hours="72">3 days</button>
+                    <button data-hours="168">Week</button>
+                </span>
+            </div>
+            <div class="chart-title">
+                <span class="legend"><i style="background: var(--text-main)"></i>Indoor</span>
+                <span class="legend"><i style="background: var(--heat)"></i>Heat setpoint</span>
+                <span class="legend"><i style="background: var(--cool)"></i>Cool setpoint</span>
+                <span class="legend"><i style="background: var(--warn)"></i>Outdoor</span>
+            </div>
+            <svg class="line-chart" id="tempChart" preserveAspectRatio="none"></svg>
+            <div class="chart-title">Run time per day <span class="legend"><i style="background: var(--heat)"></i>Heating</span><span class="legend"><i style="background: var(--cool)"></i>Cooling</span></div>
+            <div class="bars" id="runBars"></div>
+            <div class="bars-x" id="runAxis"></div>
+        </div>
+
+        <div class="panel" id="schedPanel">
+            <div class="panel-title">
+                <span>Schedules <span class="muted" id="tzNote"></span></span>
+                <button class="btn secondary" id="newSchedBtn">＋ Add schedule</button>
+            </div>
+            <div class="muted" style="margin-bottom: 10px">These run from the Pi on top of the thermostat's own schedule. Use "Hold" so the thermostat's schedule doesn't undo them at its next period.</div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Name</th><th>When</th><th>Change</th><th>Last run</th><th>On</th><th></th></tr></thead>
+                    <tbody id="schedRows"></tbody>
+                </table>
+            </div>
+            <form id="schedForm" class="sched-form hidden">
+                <label>Name <input id="sfName" maxlength="64" placeholder="e.g. Pre-cool before peak"></label>
+                <label>Repeat
+                    <select id="sfRepeat"><option value="weekly">Weekly</option><option value="once">Once</option></select>
+                </label>
+                <label>Time <input id="sfAt" type="time" required></label>
+                <label id="sfDateWrap" class="hidden">Date <input id="sfDate" type="date"></label>
+                <label id="sfZoneWrap">Zone <select id="sfZone"></select></label>
+                <label>Mode <select id="sfMode"></select></label>
+                <label>Heat to <input id="sfHeat" type="number" step="1" placeholder="leave"></label>
+                <label>Cool to <input id="sfCool" type="number" step="1" placeholder="leave"></label>
+                <label>Then
+                    <select id="sfHold">
+                        <option value="hold">Hold</option>
+                        <option value="">Leave as is</option>
+                        <option value="schedule">Follow the thermostat's schedule</option>
+                    </select>
+                </label>
+                <div class="days" id="sfDays"></div>
+                <div class="actions">
+                    <button class="btn" type="submit">Save</button>
+                    <button class="btn secondary" type="button" id="sfCancel">Cancel</button>
+                </div>
+            </form>
+            <div id="schedMsg" class="msg"></div>
+        </div>
+
+        <div class="panel" id="logPanel">
+            <div class="panel-title"><span>Changes</span></div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>When</th><th>Who</th><th>What</th><th>Result</th></tr></thead>
+                    <tbody id="commandRows"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="panel hidden" id="noDbPanel">
+            <div class="muted">History, schedules and the change log need the database: set <code>database.enabled: true</code> in config.yaml.</div>
+        </div>
+    </div>
+
+    <script>
+        const themeToggle = document.getElementById('themeToggle');
+        if ((localStorage.getItem('theme') || 'light') === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            themeToggle.textContent = '☀️';
+        }
+        themeToggle.addEventListener('click', () => {
+            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+            document.documentElement.setAttribute('data-theme', isDark ? 'light' : 'dark');
+            localStorage.setItem('theme', isDark ? 'light' : 'dark');
+            themeToggle.textContent = isDark ? '🌙' : '☀️';
+        });
+    </script>
+    <script>
+        // Behind the hub everything lives under /hvac; the hub's own /static/ belongs to the weather app.
+        window.BASE_PATH = window.location.pathname.startsWith('/hvac') ? '/hvac' : '';
+        const script = document.createElement('script');
+        script.src = window.BASE_PATH + '/static/app.js';
+        document.body.appendChild(script);
+    </script>
+</body>
+</html>

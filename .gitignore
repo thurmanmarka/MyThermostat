@@ -1,0 +1,13 @@
+# Build artifacts
+MyThermostat
+*.exe
+
+# Configuration with the American Standard Home password and DB password
+config.yaml
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -41,8 +40,6 @@ type nexiaClient struct {
 	houseID  string
 	etag     string
 	devices  []any // the house's device list from the last full read
-	// where the run-time history last answered (see runtimeHistory)
-	historyBase string
 	// A failed sign-in waits before the next, doubling each time: the cloud
 	// locks the account after a few bad passwords
 	loginWait  time.Duration
@@ -232,60 +229,53 @@ func (c *nexiaClient) post(url, method string, payload any) error {
 	return err
 }
 
-// runtimeHistory reads the thermostat's own run-time totals: the data behind
-// the website's Daily History chart, at
-// /runtime_history/XxlThermostat-{id}/{daily|monthly}.json. The website
-// serves it, and it's not known which hosts accept the app's key, so each is
-// tried in turn and the one that answers is tried first next time. A
-// redirect here means "not on this host", not an expired session: the poll
-// signs in again when the session really expires.
-func (c *nexiaClient) runtimeHistory(thermostatID, period string) (map[string]any, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.apiKey == "" {
-		if err := c.login(); err != nil {
-			return nil, err
-		}
+// runtimeHistory reads the thermostat's own run-time totals (the data behind
+// the website's Daily History chart) from the link the cloud gives for it:
+// as given, then moved onto our brand's host if that fails.
+func (c *nexiaClient) runtimeHistory(t Thermostat, period string) (map[string]any, error) {
+	href := t.historyURL(period)
+	if href == "" {
+		return nil, fmt.Errorf("%s doesn't offer a %s run-time history", t.Name, period)
 	}
-	path := fmt.Sprintf("/runtime_history/XxlThermostat-%s/%s.json", url.PathEscape(thermostatID), period)
-	var fails []string
-	for _, base := range c.historyBases() {
-		resp, data, err := c.send(http.MethodGet, base+path, nil, nil)
-		if err != nil {
-			fails = append(fails, fmt.Sprintf("%s: %v", base, err))
-			continue
-		}
-		if resp.StatusCode/100 == 2 {
-			if m, err := decodeJSON(data); err == nil && m["series"] != nil {
-				c.historyBase = base
+	m, err := c.get(href)
+	if err != nil {
+		if alt := c.rehost(href); alt != href {
+			var err2 error
+			if m, err2 = c.get(alt); err2 == nil {
 				return m, nil
 			}
-			fails = append(fails, fmt.Sprintf("%s: not history data%s", base, snippet(data)))
-			continue
+			err = fmt.Errorf("%v; %v", err, err2)
 		}
-		fails = append(fails, fmt.Sprintf("%s: HTTP %d", base, resp.StatusCode))
+		return nil, fmt.Errorf("could not read the %s run-time history: %w", period, err)
 	}
-	return nil, fmt.Errorf("could not read the run-time history (%s)", strings.Join(fails, "; "))
+	return m, nil
 }
 
-// historyBases lists where to look for the run-time history: where it last
-// answered, the app API, the site root, and the www. host the website uses.
-func (c *nexiaClient) historyBases() []string {
-	root := strings.TrimSuffix(c.mobile, "/mobile")
-	list := []string{c.historyBase, c.mobile, root}
-	if u, err := url.Parse(root); err == nil && net.ParseIP(u.Hostname()) == nil && !strings.HasPrefix(u.Host, "www.") {
-		u.Host = "www." + u.Host
-		list = append(list, u.String())
+// get reads an href the cloud gave us. The answer's "result" is returned
+// when it has one.
+func (c *nexiaClient) get(url string) (map[string]any, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m, _, err := c.call(http.MethodGet, url, nil, nil)
+	if err != nil {
+		return nil, err
 	}
-	var out []string
-	seen := map[string]bool{"": true}
-	for _, b := range list {
-		if !seen[b] {
-			seen[b] = true
-			out = append(out, b)
-		}
+	if r, ok := m["result"].(map[string]any); ok {
+		return r, nil
 	}
-	return out
+	return m, nil
+}
+
+// rehost moves an href onto our brand's host: the cloud's links can name
+// the shared Nexia host (www.mynexia.com) rather than the one signed into.
+func (c *nexiaClient) rehost(href string) string {
+	u, err := url.Parse(href)
+	root, err2 := url.Parse(c.mobile)
+	if err != nil || err2 != nil || u.Host == "" {
+		return href
+	}
+	u.Scheme, u.Host = root.Scheme, root.Host
+	return u.String()
 }
 
 // ---- Reading the JSON ----

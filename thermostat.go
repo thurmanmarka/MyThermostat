@@ -319,6 +319,17 @@ func (t *Thermostat) zone(id string) *Zone {
 	return nil
 }
 
+// historyURL is where the cloud offers the thermostat's run-time history
+// (the "runtime_history" feature), period "daily" or "monthly"; "" when it
+// doesn't.
+func (t *Thermostat) historyURL(period string) string {
+	action := "get_runtime_history"
+	if period == "monthly" {
+		action = "get_monthly_runtime_history"
+	}
+	return str(dig(findBy(t.raw["features"], "name", "runtime_history"), "actions", action, "href"))
+}
+
 func (t *Thermostat) roundTemp(f float64) float64 {
 	if t.Unit == "C" {
 		return math.Round(f*2) / 2

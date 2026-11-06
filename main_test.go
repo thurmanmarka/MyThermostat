@@ -20,6 +20,9 @@ const houseJSON = `{"success": true, "result": {"id": 123, "name": "Home", "_lin
      "features": [
        {"name": "advanced_info", "items": [{"label": "Model", "value": "XL824"}, {"label": "Firmware Version", "value": "5.9.1"}]},
        {"name": "thermostat", "scale": "f", "setpoint_heat_min": 55, "setpoint_cool_max": 99, "setpoint_delta": 3},
+       {"name": "runtime_history", "actions": {
+         "get_runtime_history": {"href": "HISTORY_URL?report_type=daily", "method": "GET"},
+         "get_monthly_runtime_history": {"href": "HISTORY_URL?report_type=monthly", "method": "GET"}}},
        {"name": "thermostat_fan_mode", "actions": {"update_thermostat_fan_mode": {"href": "FAN_URL", "method": "POST"}}}
      ],
      "settings": [
@@ -101,17 +104,22 @@ func (f *fakeCloud) handler(t *testing.T) http.Handler {
 		w.Header().Set("ETag", `"v1"`)
 		base := "http://" + r.Host + "/mobile"
 		io.WriteString(w, strings.NewReplacer("SETPOINTS_URL", base+"/xxl_zones/1/setpoints", "MODE_URL", base+"/xxl_zones/1/zone_mode",
-			"RUNMODE_URL", base+"/xxl_zones/1/run_mode", "FAN_URL", base+"/xxl_thermostats/456789/fan_mode").Replace(houseJSON))
+			"RUNMODE_URL", base+"/xxl_zones/1/run_mode", "FAN_URL", base+"/xxl_thermostats/456789/fan_mode",
+			// The real cloud names the shared Nexia host, to test moving it onto ours
+			"HISTORY_URL", "http://nexia.invalid/mobile/runtime_history/TraneXl824-456789").Replace(houseJSON))
 	}))
-	// Only on the site root, not under /mobile, as on the real website
-	mux.HandleFunc("GET /runtime_history/{dev}/{file}", auth(func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("dev") != "XxlThermostat-456789" || r.PathValue("file") != "daily.json" {
+	// Only daily: monthly fails, to test the error
+	mux.HandleFunc("GET /mobile/runtime_history/{dev}", auth(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.posts = append(f.posts, r.Method+" "+r.URL.String())
+		f.mu.Unlock()
+		if r.PathValue("dev") != "TraneXl824-456789" || r.URL.Query().Get("report_type") != "daily" {
 			http.NotFound(w, r)
 			return
 		}
-		io.WriteString(w, `{"categories": ["Thursday", "Friday"], "series": [
+		io.WriteString(w, `{"success": true, "result": {"categories": ["Thursday", "Friday"], "series": [
 			{"name": "Stage 2 Cool", "data": [0, 0.8], "stack": "cool", "state": "cool_stage2"},
-			{"name": "Cool", "data": [6.2, 1.1], "stack": "cool", "state": "cool_stage1"}]}`)
+			{"name": "Cool", "data": [6.2, 1.1], "stack": "cool", "state": "cool_stage1"}]}}`)
 	}))
 	mux.HandleFunc("/", auth(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -243,16 +251,18 @@ func TestClientSignInAndETag(t *testing.T) {
 func TestRuntimeHistory(t *testing.T) {
 	c, f := testClient(t)
 	h := newHVAC(c, time.Minute)
+	if _, err := h.RuntimeHistory("456789", "daily"); err != errNotReady {
+		t.Errorf("before the first read: %v", err)
+	}
+	h.history = map[string]historyEntry{}
+	h.refresh()
 	m, err := h.RuntimeHistory("456789", "daily")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// "result" is unwrapped
 	if s, _ := m["series"].([]any); len(s) != 2 {
 		t.Errorf("series %v", m["series"])
-	}
-	// /mobile didn't have it (the catch-all answered without "series"), the root did
-	if root := strings.TrimSuffix(c.mobile, "/mobile"); c.historyBase != root {
-		t.Errorf("history base %q, want %q", c.historyBase, root)
 	}
 	if f.logins != 1 {
 		t.Errorf("signed in %d times, want 1", f.logins)

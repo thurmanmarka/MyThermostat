@@ -53,7 +53,11 @@ func (h *hvac) RuntimeHistory(thermostatID, period string) (map[string]any, erro
 			return old.data, old.err
 		}
 	}
-	data, err := h.client.runtimeHistory(thermostatID, period)
+	t, ok := h.thermostat(thermostatID)
+	if !ok {
+		return nil, errNotReady
+	}
+	data, err := h.client.runtimeHistory(t, period)
 	if err != nil && (!had || old.err == nil || old.err.Error() != err.Error()) {
 		log.Printf("⚠️  %v", err)
 	}

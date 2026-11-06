@@ -434,14 +434,14 @@ func runHistoryCheck(c *nexiaClient) {
 	for _, t := range ts {
 		for _, period := range []string{"daily", "monthly"} {
 			fmt.Printf("\n=== %s (id %s) %s ===\n", t.Name, t.ID, period)
-			m, err := c.runtimeHistory(t.ID, period)
+			fmt.Println("link:", t.historyURL(period))
+			m, err := c.runtimeHistory(t, period)
 			if err != nil {
 				fmt.Println(err)
 				continue
 			}
 			out, _ := json.MarshalIndent(m, "", "  ")
 			fmt.Println(string(out))
-			fmt.Println("(read from " + c.historyBase + ")")
 		}
 	}
 }

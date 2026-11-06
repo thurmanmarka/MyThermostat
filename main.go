@@ -41,6 +41,10 @@ func main() {
 	}
 
 	thermo = newHVAC(client, time.Duration(cfg.PollSeconds)*time.Second)
+	if !cfg.Outdoor.Disabled {
+		thermo.outdoor = newOutdoorSource(cfg.Outdoor.URL)
+		log.Printf("🌤️  Outdoor temperatures from MyWeatherDash at %s", cfg.Outdoor.URL)
+	}
 	if cfg.Database.Enabled {
 		db, err = openStore(cfg.Database)
 		if err != nil {
@@ -439,6 +443,13 @@ func runHistoryCheck(c *nexiaClient) {
 			if err != nil {
 				fmt.Println(err)
 				continue
+			}
+			if !cfg.Outdoor.Disabled {
+				if his, err := newOutdoorSource(cfg.Outdoor.URL).highsLows(period, columns(m), time.Now()); err != nil {
+					fmt.Println(err)
+				} else {
+					fillOutdoor(m, his)
+				}
 			}
 			out, _ := json.MarshalIndent(m, "", "  ")
 			fmt.Println(string(out))

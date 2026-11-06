@@ -252,6 +252,43 @@ function selectionChanged() {
     loadCommands();
 }
 
+// ---- Panels that fold to their title bar ----
+
+const FOLDABLE = ['settingsPanel', 'historyPanel', 'cloudPanel', 'schedPanel', 'logPanel'];
+const FOLDED_AT_FIRST = ['settingsPanel', 'historyPanel', 'cloudPanel', 'logPanel'];
+// Charts are drawn to the panel's width, so they're redrawn when opened
+const ON_OPEN = { historyPanel: () => loadHistory(), cloudPanel: () => loadCloudHistory() };
+const folded = (id) => $(id).classList.contains('collapsed');
+
+function initFolding() {
+    FOLDABLE.forEach((id) => {
+        const panel = $(id);
+        const title = panel.querySelector('.panel-title');
+        panel.classList.add('collapsible');
+        title.firstElementChild.prepend(el('span', { class: 'chev', 'aria-hidden': 'true' }, '▾'));
+        title.setAttribute('role', 'button');
+        title.setAttribute('tabindex', '0');
+        let saved = null;
+        try { saved = localStorage.getItem('hvac.folded.' + id); } catch (_) { /* private window */ }
+        const setFolded = (f) => {
+            panel.classList.toggle('collapsed', f);
+            title.setAttribute('aria-expanded', String(!f));
+        };
+        setFolded(saved == null ? FOLDED_AT_FIRST.includes(id) : saved === '1');
+        const toggle = (e) => {
+            if (e.target.closest('button, select, input, a')) return; // the title's own controls
+            const f = !folded(id);
+            setFolded(f);
+            try { localStorage.setItem('hvac.folded.' + id, f ? '1' : '0'); } catch (_) { /* not kept */ }
+            if (!f && ON_OPEN[id]) ON_OPEN[id]();
+        };
+        title.addEventListener('click', toggle);
+        title.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(e); }
+        });
+    });
+}
+
 // ---- The thermostat's own run time (from the cloud) ----
 
 let period = 'daily';
@@ -270,7 +307,7 @@ const hrs = (v) => (v == null || v === '' ? '-' : typeof v === 'number' ? (Math.
 
 async function loadCloudHistory() {
     const t = current();
-    if (!t) return;
+    if (!t || folded('cloudPanel')) return; // read from the cloud only when shown
     let data;
     try {
         data = await api(`/api/thermostats/${t.id}/runtime?period=${period}`);
@@ -279,7 +316,7 @@ async function loadCloudHistory() {
         setMsg($('cloudMsg'), e.message, false);
         return;
     }
-    setMsg($('cloudMsg'), '');
+    setMsg($('cloudMsg'), data.outdoor_source ? `Outdoor high/low from the ${data.outdoor_source}.` : '');
     // The app API sends a chart config ({chart: {series, xAxis: {categories}, colors}});
     // the website sends {categories, series}
     const chart = data.chart || data;
@@ -581,6 +618,7 @@ $('periodTabs').querySelectorAll('button').forEach((b) => b.addEventListener('cl
 }));
 window.addEventListener('resize', () => { clearTimeout(window._rs); window._rs = setTimeout(loadHistory, 300); });
 
+initFolding();
 refresh();
 setInterval(refresh, 30000);
 setInterval(loadHistory, 5 * 60000);

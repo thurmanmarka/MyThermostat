@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -276,6 +277,65 @@ func TestRuntimeHistory(t *testing.T) {
 	}
 	if _, err := h.RuntimeHistory("456789", "monthly"); err == nil {
 		t.Error("monthly isn't served by the fake, want an error")
+	}
+}
+
+func TestOutdoor(t *testing.T) {
+	now := time.Date(2026, 11, 6, 15, 0, 0, 0, time.Local)
+	day := func(d, h int) time.Time { return time.Date(2026, 11, d, h, 0, 0, 0, time.Local) }
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/api/weather" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		rs := []wxReading{
+			{day(4, 6), 61, 40}, {day(4, 15), 84, 41},
+			{day(5, 3), 0, 0}, // missing reading
+			{day(5, 6), 58, 40}, {day(5, 14), 80, 41},
+			{day(6, 6), 63.4, 40}, {day(6, 13), 77.6, 41},
+		}
+		json.NewEncoder(w).Encode(rs)
+	}))
+	defer srv.Close()
+	o := newOutdoorSource(srv.URL)
+	his, err := o.highsLows("daily", 4, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if his[0] != nil || his[1].Hi != 84 || his[2].Lo != 58 || his[3].Hi != 77.6 {
+		t.Errorf("highs/lows %+v %+v %+v %+v", his[0], his[1], his[2], his[3])
+	}
+	m := map[string]any{"table": map[string]any{"headings": []any{"Tue", "Wed", "Thu", "Fri"}, "series": []any{
+		map[string]any{"name": "Outdoor High Temp.", "data": []any{"-", "-", "-", "-"}},
+	}}}
+	fillOutdoor(m, his)
+	series := m["table"].(map[string]any)["series"].([]any)
+	if len(series) != 2 {
+		t.Fatalf("series %v", series)
+	}
+	if hi := series[0].(map[string]any)["data"].([]any); hi[0] != "-" || hi[3] != 78.0 {
+		t.Errorf("high row %v", hi)
+	}
+	if lo := series[1].(map[string]any); lo["name"] != "Outdoor Low Temp." || lo["data"].([]any)[2] != 58.0 {
+		t.Errorf("low row %v", lo)
+	}
+	// Finished days are remembered, even empty ones: only today is read again
+	var start string
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		start = r.URL.Query().Get("start")
+		io.WriteString(w, `[]`)
+	})
+	his, err = o.highsLows("daily", 4, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.done) != 3 || calls != 2 || start != fmt.Sprint(day(6, 0).Unix()) || his[1].Hi != 84 || his[3] != nil {
+		t.Errorf("remembered %d days, %d calls, start %s, his %+v", len(o.done), calls, start, his)
+	}
+	if s, _ := periods("monthly", 3, now); s[0].Format("2006-01-02") != "2026-09-01" {
+		t.Errorf("monthly starts %v", s)
 	}
 }
 

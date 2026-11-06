@@ -22,6 +22,7 @@ type hvac struct {
 
 	histMu  sync.Mutex
 	history map[string]historyEntry // by thermostat id + period
+	outdoor *outdoorSource          // nil = leave the outdoor rows as sent
 }
 
 type historyEntry struct {
@@ -60,6 +61,15 @@ func (h *hvac) RuntimeHistory(thermostatID, period string) (map[string]any, erro
 	data, err := h.client.runtimeHistory(t, period)
 	if err != nil && (!had || old.err == nil || old.err.Error() != err.Error()) {
 		log.Printf("⚠️  %v", err)
+	}
+	if err == nil && h.outdoor != nil {
+		if n := columns(data); n > 0 {
+			if his, oerr := h.outdoor.highsLows(period, n, time.Now()); oerr != nil {
+				log.Printf("⚠️  %v", oerr) // the history still shows, without outdoor
+			} else {
+				fillOutdoor(data, his)
+			}
+		}
 	}
 	h.history[key] = historyEntry{at: time.Now(), data: data, err: err}
 	return data, err

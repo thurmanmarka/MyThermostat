@@ -22,6 +22,12 @@ type Config struct {
 	// PollSeconds is how often the thermostats are read from the cloud. The
 	// app's own library uses 120; much faster risks the account being throttled.
 	PollSeconds int `yaml:"poll_seconds"`
+	// Outdoor fills the run-time table's outdoor high/low from MyWeatherDash
+	// (the WXStation), since the thermostat has no outdoor sensor.
+	Outdoor struct {
+		URL      string `yaml:"url"` // default http://127.0.0.1:8081
+		Disabled bool   `yaml:"disabled"`
+	} `yaml:"outdoor"`
 }
 
 // AccountConfig is the American Standard Home login the service signs in with.
@@ -64,6 +70,10 @@ func LoadConfig(path string) (*Config, error) {
 	if c.Server.Bind == "" {
 		c.Server.Bind = "127.0.0.1"
 	}
+	if c.Outdoor.URL == "" {
+		c.Outdoor.URL = "http://127.0.0.1:8081"
+	}
+	c.Outdoor.URL = strings.TrimSuffix(c.Outdoor.URL, "/")
 	if c.PollSeconds == 0 {
 		c.PollSeconds = 120
 	}

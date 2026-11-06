@@ -25,6 +25,12 @@ account:
 # library uses 120; changes you make here are read back after 5 seconds.
 poll_seconds: 120
 
+# Outdoor high/low for the run-time table, from MyWeatherDash (the
+# WXStation) on this Pi: the thermostat has no outdoor sensor.
+outdoor:
+  url: "http://127.0.0.1:8081"
+  disabled: false
+
 # MariaDB: readings for the charts and run time, the change log, and
 # schedules. Without it the thermostat can still be controlled, but nothing
 # is remembered and schedules are off.

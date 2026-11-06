@@ -156,6 +156,12 @@
         .bars .seg { width: min(70%, 28px); margin: 0 auto; }
         .bars .seg.heat { background: var(--heat); }
         .bars .seg.cool { background: var(--cool); border-radius: 4px 4px 0 0; }
+        .panel.collapsible > .panel-title { cursor: pointer; user-select: none; }
+        .panel.collapsed > .panel-title { margin-bottom: 0; }
+        .panel.collapsed > :not(.panel-title),
+        .panel.collapsed > .panel-title > :not(:first-child) { display: none !important; }
+        .chev { display: inline-block; width: 1em; margin-right: 6px; color: var(--text-muted); transition: transform 0.15s; }
+        .panel.collapsed .chev { transform: rotate(-90deg); }
         .bars.tall { height: 180px; }
         .bars .seg.stack { border-radius: 0; }
         .bars .seg.stack.top { border-radius: 4px 4px 0 0; }

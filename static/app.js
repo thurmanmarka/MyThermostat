@@ -310,18 +310,22 @@ async function loadCloudHistory() {
     }));
     $('cloudAxis').replaceChildren(...cats.map((c) => el('span', { title: c }, String(c).slice(0, 3))));
 
-    // Table: the run time, any other per-day series, and any other list in
-    // the reply that lines up with the days (the website's table rows)
-    const rows = stacked.map((s) => [s.name + ' (h)', s.data]);
-    series.filter((s) => !s.stack).forEach((s) => rows.push([s.name, s.data]));
-    for (const [k, v] of Object.entries(data)) {
-        if (k !== 'categories' && k !== 'series' && k !== 'colors' && Array.isArray(v) && v.length === cats.length && v.every((x) => typeof x !== 'object' || x === null)) {
-            rows.push([k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()), v]);
-        }
+    // Table: the app API sends the website's table ({headings, series:
+    // [{name, data}]}), where run-time rows that never ran are left out like
+    // in the chart. Without one, show the chart's numbers.
+    let heads = cats.map((c) => String(c).slice(0, 3));
+    let rows;
+    if (data.table && Array.isArray(data.table.series)) {
+        if (Array.isArray(data.table.headings)) heads = data.table.headings.map(String);
+        rows = data.table.series
+            .filter((s) => Array.isArray(s.data) && !(s.stack && !s.data.some((v) => Number(v) > 0)))
+            .map((s) => [s.name, s.data]);
+    } else {
+        rows = series.filter((s) => !s.stack || stacked.includes(s)).map((s) => [s.name + (s.stack ? ' (h)' : ''), s.data]);
     }
     $('cloudTable').replaceChildren(
-        el('thead', {}, el('tr', {}, el('th', {}, ''), ...cats.map((c) => el('th', {}, String(c).slice(0, 3))))),
-        el('tbody', {}, ...rows.map(([name, vals]) => el('tr', {}, el('td', {}, name), ...cats.map((_, i) => el('td', {}, hrs(vals[i])))))),
+        el('thead', {}, el('tr', {}, el('th', {}, ''), ...heads.map((h) => el('th', {}, h)))),
+        el('tbody', {}, ...rows.map(([name, vals]) => el('tr', {}, el('td', {}, name), ...heads.map((_, i) => el('td', {}, hrs(vals[i])))))),
     );
 }
 

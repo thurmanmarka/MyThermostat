@@ -258,6 +258,7 @@ let period = 'daily';
 
 // Heat in reds and cool in blues, paler for higher stages; anything else grey
 function seriesColor(s) {
+    if (s.color) return { color: s.color, opacity: 1 };
     const st = String(s.state || s.name || '').toLowerCase();
     const stage = Number((st.match(/stage\s*_?(\d)/) || [])[1] || 1);
     const opacity = [1, 1, 0.55, 0.3][stage] ?? 1;
@@ -279,8 +280,14 @@ async function loadCloudHistory() {
         return;
     }
     setMsg($('cloudMsg'), '');
-    const cats = data.categories || [];
-    const series = (data.series || []).filter((s) => Array.isArray(s.data));
+    // The app API sends a chart config ({chart: {series, xAxis: {categories}, colors}});
+    // the website sends {categories, series}
+    const chart = data.chart || data;
+    const xAxis = Array.isArray(chart.xAxis) ? chart.xAxis[0] : chart.xAxis || {};
+    const cats = data.categories || chart.categories || xAxis.categories || [];
+    const palette = Array.isArray(chart.colors) ? chart.colors : [];
+    const series = (data.series || chart.series || []).map((s, i) => ({ ...s, color: s.color || palette[i % (palette.length || 1)] }))
+        .filter((s) => Array.isArray(s.data));
     // Stacked series are the chart; skip the ones that never ran
     const stacked = series.filter((s) => s.stack && s.data.some((v) => Number(v) > 0));
     const total = (i) => stacked.reduce((sum, s) => sum + (Number(s.data[i]) || 0), 0);
@@ -308,7 +315,7 @@ async function loadCloudHistory() {
     const rows = stacked.map((s) => [s.name + ' (h)', s.data]);
     series.filter((s) => !s.stack).forEach((s) => rows.push([s.name, s.data]));
     for (const [k, v] of Object.entries(data)) {
-        if (k !== 'categories' && k !== 'series' && Array.isArray(v) && v.length === cats.length && v.every((x) => typeof x !== 'object' || x === null)) {
+        if (k !== 'categories' && k !== 'series' && k !== 'colors' && Array.isArray(v) && v.length === cats.length && v.every((x) => typeof x !== 'object' || x === null)) {
             rows.push([k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()), v]);
         }
     }

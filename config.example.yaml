@@ -25,6 +25,13 @@ account:
 # library uses 120; changes you make here are read back after 5 seconds.
 poll_seconds: 120
 
+# A schedule that couldn't run on time (the Pi was off, or the change
+# failed and is being retried) still runs up to this many minutes late,
+# unless the thermostat was changed by hand or by a later schedule since.
+# 0 = only on time.
+schedules:
+  late_minutes: 360
+
 # Outdoor high/low for the run-time table, from MyWeatherDash (the
 # WXStation) on this Pi: the thermostat has no outdoor sensor.
 outdoor:

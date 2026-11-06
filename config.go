@@ -22,6 +22,12 @@ type Config struct {
 	// PollSeconds is how often the thermostats are read from the cloud. The
 	// app's own library uses 120; much faster risks the account being throttled.
 	PollSeconds int `yaml:"poll_seconds"`
+	Schedules   struct {
+		// LateMinutes is how late a schedule may still run when it couldn't
+		// on time (the Pi was off, or the change failed and is being
+		// retried). 0 = only on time. Default 360.
+		LateMinutes *int `yaml:"late_minutes"`
+	} `yaml:"schedules"`
 	// Outdoor fills the run-time table's outdoor high/low from MyWeatherDash
 	// (the WXStation), since the thermostat has no outdoor sensor.
 	Outdoor struct {
@@ -69,6 +75,13 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if c.Server.Bind == "" {
 		c.Server.Bind = "127.0.0.1"
+	}
+	if c.Schedules.LateMinutes == nil {
+		late := 360
+		c.Schedules.LateMinutes = &late
+	}
+	if *c.Schedules.LateMinutes < 0 {
+		return nil, fmt.Errorf("schedules.late_minutes can't be negative")
 	}
 	if c.Outdoor.URL == "" {
 		c.Outdoor.URL = "http://127.0.0.1:8081"

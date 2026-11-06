@@ -50,6 +50,9 @@ type Schedule struct {
 	Enabled      bool       `json:"enabled"`
 	CreatedBy    string     `json:"created_by"`
 	LastRun      *time.Time `json:"last_run,omitempty"`
+	// ChangedAt is when it was added or last edited: a run it missed before
+	// then isn't made up
+	ChangedAt time.Time `json:"-"`
 }
 
 var errNotFound = errors.New("not found")
@@ -127,8 +130,13 @@ func openStore(c DatabaseConfig) (*store, error) {
 			enabled       BOOLEAN NOT NULL DEFAULT TRUE,
 			created_by    VARCHAR(64) NOT NULL,
 			last_run_at   DATETIME NULL,
+			changed_at    DATETIME NULL,
 			KEY idx_thermostat (thermostat_id)
 		) ENGINE=InnoDB`,
+		// Added after the first release
+		`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS changed_at DATETIME NULL`,
+		// Schedules from before then count as changed now, so none is made up
+		`UPDATE schedules SET changed_at = UTC_TIMESTAMP() WHERE changed_at IS NULL`,
 	} {
 		if _, err := conn.Exec(ddl); err != nil {
 			conn.Close()
@@ -227,7 +235,7 @@ func (s *store) RecentCommands(thermostatID string, n int) ([]CommandEntry, erro
 // Schedules returns every schedule, or one thermostat's when thermostatID is set.
 func (s *store) Schedules(thermostatID string) ([]Schedule, error) {
 	q := `SELECT id, thermostat_id, zone_id, name, days, run_date, at_time, mode, heat_sp, cool_sp, hold,
-		enabled, created_by, last_run_at FROM schedules`
+		enabled, created_by, last_run_at, changed_at FROM schedules`
 	args := []any{}
 	if thermostatID != "" {
 		q += ` WHERE thermostat_id = ?`
@@ -242,15 +250,16 @@ func (s *store) Schedules(thermostatID string) ([]Schedule, error) {
 	for rows.Next() {
 		var sc Schedule
 		var heat, cool sql.NullFloat64
-		var last sql.NullTime
+		var last, changed sql.NullTime
 		if err := rows.Scan(&sc.ID, &sc.ThermostatID, &sc.ZoneID, &sc.Name, &sc.Days, &sc.Date, &sc.At, &sc.Mode,
-			&heat, &cool, &sc.Hold, &sc.Enabled, &sc.CreatedBy, &last); err != nil {
+			&heat, &cool, &sc.Hold, &sc.Enabled, &sc.CreatedBy, &last, &changed); err != nil {
 			return nil, err
 		}
 		sc.Heat, sc.Cool = nullFloat(heat), nullFloat(cool)
 		if last.Valid {
 			sc.LastRun = &last.Time
 		}
+		sc.ChangedAt = changed.Time
 		out = append(out, sc)
 	}
 	return out, rows.Err()
@@ -271,7 +280,7 @@ func (s *store) Schedule(id int64) (Schedule, error) {
 
 func (s *store) AddSchedule(sc Schedule) (int64, error) {
 	res, err := s.db.Exec(`INSERT INTO schedules (thermostat_id, zone_id, name, days, run_date, at_time, mode,
-			heat_sp, cool_sp, hold, enabled, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			heat_sp, cool_sp, hold, enabled, created_by, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
 		sc.ThermostatID, sc.ZoneID, sc.Name, sc.Days, sc.Date, sc.At, sc.Mode, sc.Heat, sc.Cool, sc.Hold, sc.Enabled,
 		truncate(sc.CreatedBy, 64))
 	if err != nil {
@@ -282,7 +291,7 @@ func (s *store) AddSchedule(sc Schedule) (int64, error) {
 
 func (s *store) UpdateSchedule(sc Schedule) error {
 	res, err := s.db.Exec(`UPDATE schedules SET zone_id = ?, name = ?, days = ?, run_date = ?, at_time = ?, mode = ?,
-		heat_sp = ?, cool_sp = ?, hold = ?, enabled = ? WHERE id = ?`,
+		heat_sp = ?, cool_sp = ?, hold = ?, enabled = ?, changed_at = UTC_TIMESTAMP() WHERE id = ?`,
 		sc.ZoneID, sc.Name, sc.Days, sc.Date, sc.At, sc.Mode, sc.Heat, sc.Cool, sc.Hold, sc.Enabled, sc.ID)
 	return checkAffected(res, err)
 }
@@ -295,6 +304,15 @@ func (s *store) DeleteSchedule(id int64) error {
 func (s *store) MarkScheduleRun(id int64, at time.Time) error {
 	_, err := s.db.Exec(`UPDATE schedules SET last_run_at = ? WHERE id = ?`, at.UTC(), id)
 	return err
+}
+
+// ChangedByHandSince reports whether someone (not a schedule) changed the
+// thermostat through MyThermostat after t.
+func (s *store) ChangedByHandSince(thermostatID string, t time.Time) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM command_log WHERE thermostat_id = ? AND created_at > ? AND ok
+		AND user NOT LIKE 'schedule:%'`, thermostatID, t.UTC()).Scan(&n)
+	return n > 0, err
 }
 
 func checkAffected(res sql.Result, err error) error {

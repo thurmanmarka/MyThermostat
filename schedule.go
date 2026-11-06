@@ -63,20 +63,48 @@ func (sc *Schedule) Validate(t *Thermostat) error {
 	return nil
 }
 
-// Due reports whether the schedule should run in the minute that contains now.
-func (sc *Schedule) Due(now time.Time) bool {
-	if !sc.Enabled || now.Format("15:04") != sc.At {
-		return false
+// lastTime is the latest time at or before now the schedule was set for;
+// false when there's none in the past week (or a one-off is still to come).
+func (sc *Schedule) lastTime(now time.Time) (time.Time, bool) {
+	clock, err := time.Parse("15:04", sc.At)
+	if err != nil {
+		return time.Time{}, false
+	}
+	at := func(y int, m time.Month, d int) time.Time {
+		return time.Date(y, m, d, clock.Hour(), clock.Minute(), 0, 0, now.Location())
 	}
 	if sc.Date != "" {
-		if now.Format("2006-01-02") != sc.Date {
-			return false
+		d, err := time.ParseInLocation("2006-01-02", sc.Date, now.Location())
+		if err != nil {
+			return time.Time{}, false
 		}
-	} else if sc.Days&(1<<int(now.Weekday())) == 0 {
-		return false
+		t := at(d.Year(), d.Month(), d.Day())
+		return t, !t.After(now)
 	}
-	minute := now.Truncate(time.Minute)
-	return sc.LastRun == nil || sc.LastRun.Before(minute)
+	for back := 0; back <= 7; back++ {
+		t := at(now.Year(), now.Month(), now.Day()-back)
+		if !t.After(now) && sc.Days&(1<<int(t.Weekday())) != 0 {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// Owed is the run the schedule still owes at now: its latest time, if it
+// hasn't run since, wasn't added or edited after it, and is less than late
+// ago (always allowing the minute itself).
+func (sc *Schedule) Owed(now time.Time, late time.Duration) (time.Time, bool) {
+	if !sc.Enabled {
+		return time.Time{}, false
+	}
+	at, ok := sc.lastTime(now)
+	if !ok || now.Sub(at) >= max(late, time.Minute) {
+		return time.Time{}, false
+	}
+	if sc.LastRun != nil && !sc.LastRun.Before(at) || sc.ChangedAt.After(at) {
+		return time.Time{}, false
+	}
+	return at, true
 }
 
 // commands is what a schedule sends, in order.
@@ -94,8 +122,48 @@ func (sc *Schedule) commands() []Command {
 	return out
 }
 
-// runScheduler checks the schedules every 20 seconds, in the Pi's local time.
+// scheduler runs schedules from the Pi. A schedule that couldn't run on
+// time, because the Pi was off or a change failed, still runs up to late
+// afterwards: a failure is tried again after 1, 2, 4... minutes (at most
+// 15), and missed ones run in the order they were due, so the thermostat
+// ends up as the last of them meant. A late run is skipped if the thermostat
+// was changed by hand, or by a later schedule, since it was due.
+type scheduler struct {
+	late   time.Duration
+	send   func(by, thermostatID string, c Command) error
+	settle func() // reads the thermostat back between changes
+	mark   func(id int64, at time.Time) error
+	byHand func(thermostatID string, since time.Time) (bool, error)
+	note   func(CommandEntry)
+	retry  map[int64]retryState // by schedule id
+}
+
+type retryState struct {
+	due   time.Time // the run being retried
+	fails int
+	next  time.Time
+}
+
+func newScheduler(h *hvac) *scheduler {
+	late := 360
+	if cfg.Schedules.LateMinutes != nil {
+		late = *cfg.Schedules.LateMinutes
+	}
+	return &scheduler{
+		late:   time.Duration(late) * time.Minute,
+		send:   h.Send,
+		settle: h.refresh,
+		mark:   db.MarkScheduleRun,
+		byHand: db.ChangedByHandSince,
+		note:   db.RecordCommand,
+		retry:  map[int64]retryState{},
+	}
+}
+
+// runScheduler checks the schedules every 20 seconds, in the Pi's local
+// time. The first check, 20 seconds after starting, makes up missed runs.
 func runScheduler(h *hvac, stop <-chan struct{}) {
+	s := newScheduler(h)
 	t := time.NewTicker(20 * time.Second)
 	defer t.Stop()
 	purged := time.Time{}
@@ -113,31 +181,110 @@ func runScheduler(h *hvac, stop <-chan struct{}) {
 				log.Printf("⚠️  could not read schedules: %v", err)
 				continue
 			}
-			for _, sc := range scheds {
-				if sc.Due(now) {
-					runSchedule(h, sc, now)
-				}
-			}
+			s.tick(now, scheds)
 		}
 	}
 }
 
-func runSchedule(h *hvac, sc Schedule, now time.Time) {
-	// Marked first so a failure isn't retried every tick for the rest of the minute
-	if err := db.MarkScheduleRun(sc.ID, now); err != nil {
-		log.Printf("⚠️  could not mark schedule %d as run: %v", sc.ID, err)
-		return
+func (s *scheduler) tick(now time.Time, scheds []Schedule) {
+	type job struct {
+		sc  Schedule
+		due time.Time
 	}
+	var jobs []job
+	owed := map[int64]bool{}
+	for _, sc := range scheds {
+		due, ok := sc.Owed(now, s.late)
+		if !ok {
+			continue
+		}
+		owed[sc.ID] = true
+		if r, ok := s.retry[sc.ID]; ok && r.due.Equal(due) && now.Before(r.next) {
+			continue
+		}
+		jobs = append(jobs, job{sc, due})
+	}
+	for id := range s.retry {
+		if !owed[id] {
+			delete(s.retry, id) // ran, too late now, or deleted
+		}
+	}
+	slices.SortStableFunc(jobs, func(a, b job) int { return a.due.Compare(b.due) })
+
+	waiting := map[string]bool{} // thermostats with a failed run: later ones wait, to keep the order
+	for _, j := range jobs {
+		sc := j.sc
+		if waiting[sc.ThermostatID] {
+			continue
+		}
+		lateBy := now.Sub(j.due).Truncate(time.Minute)
+		if lateBy > 0 {
+			if why := s.skipReason(sc, j.due, scheds); why != "" {
+				log.Printf("⏭️  skipped schedule %q due %s: %s", sc.Name, j.due.Format("Mon 15:04"), why)
+				if err := s.mark(sc.ID, now); err != nil {
+					log.Printf("⚠️  could not mark schedule %d: %v", sc.ID, err)
+				}
+				s.note(CommandEntry{User: "schedule: " + sc.Name, ThermostatID: sc.ThermostatID, Action: "schedule",
+					Detail: fmt.Sprintf("skipped the %s run: %s", j.due.Format("Mon 15:04"), why), OK: true})
+				continue
+			}
+		}
+		if err := s.run(sc, now, lateBy); err != nil {
+			r := s.retry[sc.ID]
+			if !r.due.Equal(j.due) {
+				r = retryState{due: j.due}
+			}
+			r.fails++
+			r.next = now.Add(min(time.Minute<<(r.fails-1), 15*time.Minute))
+			s.retry[sc.ID] = r
+			waiting[sc.ThermostatID] = true
+			if r.next.Sub(j.due) < max(s.late, time.Minute) {
+				log.Printf("⏰ schedule %q failed (%v); trying again at %s", sc.Name, err, r.next.Format("15:04"))
+			} else {
+				log.Printf("⏰ schedule %q failed (%v); giving up, it's too late now", sc.Name, err)
+			}
+			continue
+		}
+		delete(s.retry, sc.ID)
+	}
+}
+
+// skipReason is why a late run shouldn't happen now; "" to run it.
+func (s *scheduler) skipReason(sc Schedule, due time.Time, scheds []Schedule) string {
+	for _, o := range scheds {
+		if o.ID != sc.ID && o.ThermostatID == sc.ThermostatID && o.ZoneID == sc.ZoneID &&
+			o.LastRun != nil && o.LastRun.After(due) {
+			return fmt.Sprintf("the later schedule %q has run since", o.Name)
+		}
+	}
+	changed, err := s.byHand(sc.ThermostatID, due)
+	if err != nil {
+		log.Printf("⚠️  could not check the change log: %v", err)
+	}
+	if changed {
+		return "the thermostat was changed by hand since"
+	}
+	return ""
+}
+
+func (s *scheduler) run(sc Schedule, now time.Time, lateBy time.Duration) error {
 	by := "schedule: " + sc.Name
+	if lateBy > 0 {
+		by += ", " + strings.TrimSuffix(lateBy.String(), "0s") + " late"
+	}
 	for _, c := range sc.commands() {
 		// Each change waits for the last to show, so the next is planned
 		// against the thermostat's new state
-		if err := h.Send(by, sc.ThermostatID, c); err != nil {
-			return
+		if err := s.send(by, sc.ThermostatID, c); err != nil {
+			return err
 		}
-		h.refresh()
+		s.settle()
 	}
-	log.Printf("⏰ ran schedule %q", sc.Name)
+	if err := s.mark(sc.ID, now); err != nil {
+		return fmt.Errorf("sent, but could not mark it as run: %w", err)
+	}
+	log.Printf("⏰ ran schedule %q%s", sc.Name, strings.TrimPrefix(by, "schedule: "+sc.Name))
+	return nil
 }
 
 // describeSchedule summarises a schedule for the command log.

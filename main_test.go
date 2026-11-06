@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -424,13 +426,141 @@ func TestScheduleValidate(t *testing.T) {
 	}
 	due := Schedule{Enabled: true, Days: 1 << int(time.Wednesday), At: "14:00"}
 	wed := time.Date(2026, 7, 1, 14, 0, 30, 0, time.Local)
-	if !due.Due(wed) || due.Due(wed.Add(time.Minute)) || due.Due(wed.AddDate(0, 0, 1)) {
-		t.Error("Due")
+	owed := func(now time.Time, late time.Duration) bool { _, ok := due.Owed(now, late); return ok }
+	if !owed(wed, 0) || owed(wed.Add(time.Minute), 0) || owed(wed.AddDate(0, 0, 1), 0) || owed(wed.Add(-time.Minute), 0) {
+		t.Error("on time only")
+	}
+	if !owed(wed.Add(5*time.Hour), 6*time.Hour) || owed(wed.Add(7*time.Hour), 6*time.Hour) {
+		t.Error("late")
+	}
+	// Thursday morning still owes Wednesday's run, within the window
+	if at, ok := due.Owed(wed.Add(18*time.Hour), 24*time.Hour); !ok || at.Day() != 1 || at.Hour() != 14 {
+		t.Errorf("owed %v %v", at, ok)
 	}
 	ran := wed.Add(-10 * time.Second)
 	due.LastRun = &ran
-	if due.Due(wed) {
+	if owed(wed, 0) {
 		t.Error("ran this minute already")
+	}
+	due.LastRun = nil
+	due.ChangedAt = wed.Add(time.Hour)
+	if owed(wed.Add(2*time.Hour), 6*time.Hour) {
+		t.Error("added after it was due: not made up")
+	}
+	once := Schedule{Enabled: true, Date: "2026-07-01", At: "14:00"}
+	if _, ok := once.Owed(wed.Add(-time.Hour), time.Hour); ok {
+		t.Error("one-off still to come")
+	}
+	if _, ok := once.Owed(wed, 0); !ok {
+		t.Error("one-off due")
+	}
+}
+
+// fakeScheduler records what a scheduler sends, and fails while failing is set.
+type fakeScheduler struct {
+	*scheduler
+	sent    []string
+	marked  map[int64]time.Time
+	notes   []string
+	failing bool
+	hand    bool
+}
+
+func newFakeScheduler(late time.Duration) *fakeScheduler {
+	f := &fakeScheduler{marked: map[int64]time.Time{}}
+	f.scheduler = &scheduler{
+		late: late,
+		send: func(by, tid string, c Command) error {
+			if f.failing {
+				return errors.New("cloud down")
+			}
+			f.sent = append(f.sent, by+" "+c.Action)
+			return nil
+		},
+		settle: func() {},
+		mark:   func(id int64, at time.Time) error { f.marked[id] = at; return nil },
+		byHand: func(string, time.Time) (bool, error) { return f.hand, nil },
+		note:   func(e CommandEntry) { f.notes = append(f.notes, e.Detail) },
+		retry:  map[int64]retryState{},
+	}
+	return f
+}
+
+// apply copies the marks into the schedules, as reading them back from the database would.
+func (f *fakeScheduler) apply(scheds []Schedule) {
+	for i := range scheds {
+		if at, ok := f.marked[scheds[i].ID]; ok {
+			scheds[i].LastRun = &at
+		}
+	}
+}
+
+func TestSchedulerMakesUpAndRetries(t *testing.T) {
+	day := func(h, m int) time.Time { return time.Date(2026, 7, 1, h, m, 0, 0, time.Local) }
+	every := 127
+	scheds := []Schedule{
+		{ID: 1, ThermostatID: "T", ZoneID: "Z", Name: "Morning", Days: every, At: "06:00", Mode: "COOL", Enabled: true},
+		{ID: 2, ThermostatID: "T", ZoneID: "Z", Name: "Noon", Days: every, At: "12:00", Hold: "hold", Enabled: true},
+	}
+	// The Pi comes back at 12:30: both are made up, in order
+	f := newFakeScheduler(8 * time.Hour)
+	f.tick(day(12, 30), scheds)
+	want := []string{"schedule: Morning, 6h30m late mode", "schedule: Noon, 30m late hold"}
+	if !slices.Equal(f.sent, want) {
+		t.Errorf("sent %q, want %q", f.sent, want)
+	}
+	f.apply(scheds)
+	f.sent = nil
+	f.tick(day(12, 31), scheds)
+	if len(f.sent) != 0 {
+		t.Errorf("ran again: %q", f.sent)
+	}
+
+	// Tomorrow at 06:00 the cloud is down: retried after 1, then 2 minutes
+	tomorrow := func(h, m int) time.Time { return day(h, m).AddDate(0, 0, 1) }
+	f.failing = true
+	f.tick(tomorrow(6, 0), scheds)
+	f.tick(tomorrow(6, 0).Add(30*time.Second), scheds) // too soon
+	f.failing = false
+	f.tick(tomorrow(6, 0).Add(50*time.Second), scheds) // still too soon
+	if len(f.sent) != 0 {
+		t.Fatalf("sent %q before the retry time", f.sent)
+	}
+	f.tick(tomorrow(6, 1), scheds)
+	if len(f.sent) != 1 || f.sent[0] != "schedule: Morning, 1m late mode" {
+		t.Errorf("retry sent %q", f.sent)
+	}
+	if len(f.retry) != 0 {
+		t.Errorf("retry state left: %v", f.retry)
+	}
+	f.apply(scheds)
+
+	// A late run is skipped when the thermostat was changed by hand since
+	f.sent = nil
+	f.hand = true
+	f.tick(tomorrow(12, 5), scheds)
+	if len(f.sent) != 0 || len(f.notes) != 1 || !strings.Contains(f.notes[0], "by hand") {
+		t.Errorf("sent %q notes %q", f.sent, f.notes)
+	}
+	if _, ok := f.marked[2]; !ok {
+		t.Error("a skipped run should be marked, so it isn't checked again")
+	}
+	// ...but not when on time
+	f.apply(scheds)
+	f.tick(tomorrow(6, 0).AddDate(0, 0, 1), scheds)
+	if len(f.sent) != 1 {
+		t.Errorf("on-time run with hand changes: sent %q", f.sent)
+	}
+
+	// A late run is skipped when a later schedule has run since
+	g := newFakeScheduler(8 * time.Hour)
+	noon := day(12, 0)
+	s2 := []Schedule{scheds[0], scheds[1]}
+	s2[0].LastRun, s2[1].LastRun = nil, &noon
+	s2[0].ChangedAt, s2[1].ChangedAt = time.Time{}, time.Time{}
+	g.tick(day(12, 30), s2)
+	if len(g.sent) != 0 || len(g.notes) != 1 || !strings.Contains(g.notes[0], `"Noon"`) {
+		t.Errorf("sent %q notes %q", g.sent, g.notes)
 	}
 }
 

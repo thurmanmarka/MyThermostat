@@ -251,7 +251,7 @@
                 <span>Schedules <span class="muted" id="tzNote"></span></span>
                 <button class="btn secondary" id="newSchedBtn">＋ Add schedule</button>
             </div>
-            <div class="muted" style="margin-bottom: 10px">These run from the Pi on top of the thermostat's own schedule. Use "Hold" so the thermostat's schedule doesn't undo them at its next period.</div>
+            <div class="muted" style="margin-bottom: 10px">These run from the Pi on top of the thermostat's own schedule. Use "Hold" so the thermostat's schedule doesn't undo them at its next period. If one can't run on time (the Pi was off, or the change failed), it's retried and still runs up to a few hours late, unless the thermostat was changed by hand or by a later schedule in the meantime.</div>
             <div class="table-wrap">
                 <table>
                     <thead><tr><th>Name</th><th>When</th><th>Change</th><th>Last run</th><th>On</th><th></th></tr></thead>

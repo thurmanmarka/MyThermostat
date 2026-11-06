@@ -103,6 +103,16 @@ func (f *fakeCloud) handler(t *testing.T) http.Handler {
 		io.WriteString(w, strings.NewReplacer("SETPOINTS_URL", base+"/xxl_zones/1/setpoints", "MODE_URL", base+"/xxl_zones/1/zone_mode",
 			"RUNMODE_URL", base+"/xxl_zones/1/run_mode", "FAN_URL", base+"/xxl_thermostats/456789/fan_mode").Replace(houseJSON))
 	}))
+	// Only on the site root, not under /mobile, as on the real website
+	mux.HandleFunc("GET /runtime_history/{dev}/{file}", auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("dev") != "XxlThermostat-456789" || r.PathValue("file") != "daily.json" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, `{"categories": ["Thursday", "Friday"], "series": [
+			{"name": "Stage 2 Cool", "data": [0, 0.8], "stack": "cool", "state": "cool_stage2"},
+			{"name": "Cool", "data": [6.2, 1.1], "stack": "cool", "state": "cool_stage1"}]}`)
+	}))
 	mux.HandleFunc("/", auth(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
@@ -227,6 +237,35 @@ func TestClientSignInAndETag(t *testing.T) {
 	}
 	if c.etag != "" {
 		t.Error("a change should make the next read a full one")
+	}
+}
+
+func TestRuntimeHistory(t *testing.T) {
+	c, f := testClient(t)
+	h := newHVAC(c, time.Minute)
+	m, err := h.RuntimeHistory("456789", "daily")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := m["series"].([]any); len(s) != 2 {
+		t.Errorf("series %v", m["series"])
+	}
+	// /mobile didn't have it (the catch-all answered without "series"), the root did
+	if root := strings.TrimSuffix(c.mobile, "/mobile"); c.historyBase != root {
+		t.Errorf("history base %q, want %q", c.historyBase, root)
+	}
+	if f.logins != 1 {
+		t.Errorf("signed in %d times, want 1", f.logins)
+	}
+	// A second read within 15 minutes comes from the cache
+	f.mu.Lock()
+	f.posts = nil
+	f.mu.Unlock()
+	if _, err := h.RuntimeHistory("456789", "daily"); err != nil || len(f.posts) != 0 {
+		t.Errorf("cached read: err %v, requests %q", err, f.posts)
+	}
+	if _, err := h.RuntimeHistory("456789", "monthly"); err == nil {
+		t.Error("monthly isn't served by the fake, want an error")
 	}
 }
 

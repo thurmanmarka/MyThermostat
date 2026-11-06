@@ -19,12 +19,46 @@ type hvac struct {
 	updated   time.Time // last successful read
 	lastError string
 	wake      chan struct{}
+
+	histMu  sync.Mutex
+	history map[string]historyEntry // by thermostat id + period
+}
+
+type historyEntry struct {
+	at   time.Time
+	data map[string]any
+	err  error
 }
 
 var errNotReady = errors.New("the thermostat hasn't been read from American Standard Home yet")
 
 func newHVAC(c *nexiaClient, poll time.Duration) *hvac {
-	return &hvac{client: c, poll: poll, wake: make(chan struct{}, 1)}
+	return &hvac{client: c, poll: poll, wake: make(chan struct{}, 1), history: map[string]historyEntry{}}
+}
+
+// RuntimeHistory is the thermostat's own run-time history, period "daily"
+// or "monthly". The totals change slowly, so a read is kept 15 minutes (a
+// failure 5) rather than asking the cloud on every page load.
+func (h *hvac) RuntimeHistory(thermostatID, period string) (map[string]any, error) {
+	key := thermostatID + "/" + period
+	h.histMu.Lock()
+	defer h.histMu.Unlock()
+	old, had := h.history[key]
+	if had {
+		keep := 15 * time.Minute
+		if old.err != nil {
+			keep = 5 * time.Minute
+		}
+		if time.Since(old.at) < keep {
+			return old.data, old.err
+		}
+	}
+	data, err := h.client.runtimeHistory(thermostatID, period)
+	if err != nil && (!had || old.err == nil || old.err.Error() != err.Error()) {
+		log.Printf("⚠️  %v", err)
+	}
+	h.history[key] = historyEntry{at: time.Now(), data: data, err: err}
+	return data, err
 }
 
 func (h *hvac) Run(stop <-chan struct{}) {

@@ -156,6 +156,11 @@
         .bars .seg { width: min(70%, 28px); margin: 0 auto; }
         .bars .seg.heat { background: var(--heat); }
         .bars .seg.cool { background: var(--cool); border-radius: 4px 4px 0 0; }
+        .bars.tall { height: 180px; }
+        .bars .seg.stack { border-radius: 0; }
+        .bars .seg.stack.top { border-radius: 4px 4px 0 0; }
+        .grid-table th, .grid-table td { text-align: right; white-space: nowrap; padding: 4px 8px; }
+        .grid-table th:first-child, .grid-table td:first-child { text-align: left; }
         .bars-x { display: flex; gap: 3px; font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; }
         .bars-x span { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; }
 
@@ -216,6 +221,23 @@
             <div class="chart-title">Run time per day <span class="legend"><i style="background: var(--heat)"></i>Heating</span><span class="legend"><i style="background: var(--cool)"></i>Cooling</span></div>
             <div class="bars" id="runBars"></div>
             <div class="bars-x" id="runAxis"></div>
+        </div>
+
+        <div class="panel" id="cloudPanel">
+            <div class="panel-title">
+                <span>Run time <span class="muted">the thermostat's own totals, in hours</span></span>
+                <span class="tabs" id="periodTabs">
+                    <button data-period="daily" class="active">Daily</button>
+                    <button data-period="monthly">Monthly</button>
+                </span>
+            </div>
+            <div class="chart-title" id="cloudLegend"></div>
+            <div class="bars tall" id="cloudBars"></div>
+            <div class="bars-x" id="cloudAxis"></div>
+            <div class="table-wrap" style="margin-top: 14px">
+                <table class="grid-table" id="cloudTable"></table>
+            </div>
+            <div class="msg" id="cloudMsg"></div>
         </div>
 
         <div class="panel" id="schedPanel">

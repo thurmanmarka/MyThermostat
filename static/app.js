@@ -245,10 +245,77 @@ function renderSettings(t) {
 function selectionChanged() {
     $('zones').dataset.for = '';
     render();
+    loadCloudHistory();
     if (!hasDB) return;
     loadHistory();
     loadSchedules();
     loadCommands();
+}
+
+// ---- The thermostat's own run time (from the cloud) ----
+
+let period = 'daily';
+
+// Heat in reds and cool in blues, paler for higher stages; anything else grey
+function seriesColor(s) {
+    const st = String(s.state || s.name || '').toLowerCase();
+    const stage = Number((st.match(/stage\s*_?(\d)/) || [])[1] || 1);
+    const opacity = [1, 1, 0.55, 0.3][stage] ?? 1;
+    const color = st.includes('heat') ? 'var(--heat)' : st.includes('cool') ? 'var(--cool)' : 'var(--text-muted)';
+    return { color, opacity };
+}
+
+const hrs = (v) => (v == null || v === '' ? '-' : typeof v === 'number' ? (Math.round(v * 10) / 10).toString() : String(v));
+
+async function loadCloudHistory() {
+    const t = current();
+    if (!t) return;
+    let data;
+    try {
+        data = await api(`/api/thermostats/${t.id}/runtime?period=${period}`);
+    } catch (e) {
+        ['cloudLegend', 'cloudBars', 'cloudAxis', 'cloudTable'].forEach((id) => $(id).replaceChildren());
+        setMsg($('cloudMsg'), e.message, false);
+        return;
+    }
+    setMsg($('cloudMsg'), '');
+    const cats = data.categories || [];
+    const series = (data.series || []).filter((s) => Array.isArray(s.data));
+    // Stacked series are the chart; skip the ones that never ran
+    const stacked = series.filter((s) => s.stack && s.data.some((v) => Number(v) > 0));
+    const total = (i) => stacked.reduce((sum, s) => sum + (Number(s.data[i]) || 0), 0);
+    const top = Math.max(1, ...cats.map((_, i) => total(i)));
+
+    $('cloudLegend').replaceChildren(...(stacked.length ? stacked.map((s) => {
+        const c = seriesColor(s);
+        return el('span', { class: 'legend' }, el('i', { style: `background:${c.color};opacity:${c.opacity}` }), s.name);
+    }) : [el('span', {}, 'No run time in this period.')]));
+
+    $('cloudBars').replaceChildren(...cats.map((cat, i) => {
+        const col = el('div', { class: 'col', title: `${cat}: ` + stacked.map((s) => `${s.name} ${hrs(Number(s.data[i]) || 0)} h`).join(', ') });
+        // Drawn top to bottom, so the last series sits on the axis
+        const segs = stacked.filter((s) => Number(s.data[i]) > 0).reverse();
+        segs.forEach((s, k) => {
+            const c = seriesColor(s);
+            col.append(el('div', { class: 'seg stack' + (k === 0 ? ' top' : ''), style: `height:${(Number(s.data[i]) / top) * 100}%;background:${c.color};opacity:${c.opacity}` }));
+        });
+        return col;
+    }));
+    $('cloudAxis').replaceChildren(...cats.map((c) => el('span', { title: c }, String(c).slice(0, 3))));
+
+    // Table: the run time, any other per-day series, and any other list in
+    // the reply that lines up with the days (the website's table rows)
+    const rows = stacked.map((s) => [s.name + ' (h)', s.data]);
+    series.filter((s) => !s.stack).forEach((s) => rows.push([s.name, s.data]));
+    for (const [k, v] of Object.entries(data)) {
+        if (k !== 'categories' && k !== 'series' && Array.isArray(v) && v.length === cats.length && v.every((x) => typeof x !== 'object' || x === null)) {
+            rows.push([k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()), v]);
+        }
+    }
+    $('cloudTable').replaceChildren(
+        el('thead', {}, el('tr', {}, el('th', {}, ''), ...cats.map((c) => el('th', {}, String(c).slice(0, 3))))),
+        el('tbody', {}, ...rows.map(([name, vals]) => el('tr', {}, el('td', {}, name), ...cats.map((_, i) => el('td', {}, hrs(vals[i])))))),
+    );
 }
 
 // ---- History ----
@@ -496,8 +563,14 @@ $('rangeTabs').querySelectorAll('button').forEach((b) => b.addEventListener('cli
     hours = Number(b.dataset.hours);
     loadHistory();
 }));
+$('periodTabs').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+    $('periodTabs').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    period = b.dataset.period;
+    loadCloudHistory();
+}));
 window.addEventListener('resize', () => { clearTimeout(window._rs); window._rs = setTimeout(loadHistory, 300); });
 
 refresh();
 setInterval(refresh, 30000);
 setInterval(loadHistory, 5 * 60000);
+setInterval(loadCloudHistory, 15 * 60000);

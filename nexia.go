@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +41,8 @@ type nexiaClient struct {
 	houseID  string
 	etag     string
 	devices  []any // the house's device list from the last full read
+	// where the run-time history last answered (see runtimeHistory)
+	historyBase string
 	// A failed sign-in waits before the next, doubling each time: the cloud
 	// locks the account after a few bad passwords
 	loginWait  time.Duration
@@ -226,6 +230,62 @@ func (c *nexiaClient) post(url, method string, payload any) error {
 		c.etag = ""
 	}
 	return err
+}
+
+// runtimeHistory reads the thermostat's own run-time totals: the data behind
+// the website's Daily History chart, at
+// /runtime_history/XxlThermostat-{id}/{daily|monthly}.json. The website
+// serves it, and it's not known which hosts accept the app's key, so each is
+// tried in turn and the one that answers is tried first next time. A
+// redirect here means "not on this host", not an expired session: the poll
+// signs in again when the session really expires.
+func (c *nexiaClient) runtimeHistory(thermostatID, period string) (map[string]any, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.apiKey == "" {
+		if err := c.login(); err != nil {
+			return nil, err
+		}
+	}
+	path := fmt.Sprintf("/runtime_history/XxlThermostat-%s/%s.json", url.PathEscape(thermostatID), period)
+	var fails []string
+	for _, base := range c.historyBases() {
+		resp, data, err := c.send(http.MethodGet, base+path, nil, nil)
+		if err != nil {
+			fails = append(fails, fmt.Sprintf("%s: %v", base, err))
+			continue
+		}
+		if resp.StatusCode/100 == 2 {
+			if m, err := decodeJSON(data); err == nil && m["series"] != nil {
+				c.historyBase = base
+				return m, nil
+			}
+			fails = append(fails, fmt.Sprintf("%s: not history data%s", base, snippet(data)))
+			continue
+		}
+		fails = append(fails, fmt.Sprintf("%s: HTTP %d", base, resp.StatusCode))
+	}
+	return nil, fmt.Errorf("could not read the run-time history (%s)", strings.Join(fails, "; "))
+}
+
+// historyBases lists where to look for the run-time history: where it last
+// answered, the app API, the site root, and the www. host the website uses.
+func (c *nexiaClient) historyBases() []string {
+	root := strings.TrimSuffix(c.mobile, "/mobile")
+	list := []string{c.historyBase, c.mobile, root}
+	if u, err := url.Parse(root); err == nil && net.ParseIP(u.Hostname()) == nil && !strings.HasPrefix(u.Host, "www.") {
+		u.Host = "www." + u.Host
+		list = append(list, u.String())
+	}
+	var out []string
+	seen := map[string]bool{"": true}
+	for _, b := range list {
+		if !seen[b] {
+			seen[b] = true
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // ---- Reading the JSON ----

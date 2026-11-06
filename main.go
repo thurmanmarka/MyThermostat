@@ -22,6 +22,7 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "config file")
 	check := flag.Bool("check", false, "sign in, print what the thermostats report, and exit")
 	dump := flag.Bool("dump", false, "sign in, print the raw device JSON from the cloud, and exit")
+	history := flag.Bool("history", false, "sign in, print each thermostat's daily and monthly run-time history JSON, and exit")
 	flag.Parse()
 
 	var err error
@@ -30,6 +31,10 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	client := newNexiaClient(cfg.Account)
+	if *history {
+		runHistoryCheck(client)
+		return
+	}
 	if *check || *dump {
 		runCheck(client, *dump)
 		return
@@ -83,6 +88,7 @@ func newMux() *http.ServeMux {
 	mux.HandleFunc("GET /api/thermostats", member(handleThermostats))
 	mux.HandleFunc("POST /api/thermostats/{id}/command", member(handleCommand))
 	mux.HandleFunc("GET /api/thermostats/{id}/history", member(handleHistory))
+	mux.HandleFunc("GET /api/thermostats/{id}/runtime", member(handleRuntime))
 	mux.HandleFunc("GET /api/thermostats/{id}/commands", member(handleCommands))
 	mux.HandleFunc("GET /api/thermostats/{id}/schedules", member(handleListSchedules))
 	mux.HandleFunc("POST /api/thermostats/{id}/schedules", member(handleAddSchedule))
@@ -233,6 +239,25 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 		"readings": recent,
 		"runtime":  runtimes(all, day0, runtimeDays, maxGap),
 	})
+}
+
+// handleRuntime passes on the thermostat's own run-time history from the
+// cloud. Unlike the history above it needs no database.
+func handleRuntime(w http.ResponseWriter, r *http.Request) {
+	t, ok := findThermostat(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	period := r.URL.Query().Get("period")
+	if period != "monthly" {
+		period = "daily"
+	}
+	data, err := thermo.RuntimeHistory(t.ID, period)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 func handleCommands(w http.ResponseWriter, r *http.Request) {
@@ -394,6 +419,30 @@ func runCheck(c *nexiaClient, raw bool) {
 			printSettings("    ", z.Settings)
 		}
 		printSettings("  ", t.Settings)
+	}
+}
+
+func runHistoryCheck(c *nexiaClient) {
+	devs, _, err := c.house()
+	if err != nil {
+		log.Fatal(err)
+	}
+	ts := parseThermostats(devs)
+	if len(ts) == 0 {
+		log.Fatal("no thermostats found; run with -check")
+	}
+	for _, t := range ts {
+		for _, period := range []string{"daily", "monthly"} {
+			fmt.Printf("\n=== %s (id %s) %s ===\n", t.Name, t.ID, period)
+			m, err := c.runtimeHistory(t.ID, period)
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			out, _ := json.MarshalIndent(m, "", "  ")
+			fmt.Println(string(out))
+			fmt.Println("(read from " + c.historyBase + ")")
+		}
 	}
 }
 
